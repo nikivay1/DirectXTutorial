@@ -261,6 +261,7 @@ HRESULT InitDevice()
     {
         g_driverType = driverTypes[driverTypeIndex];
         hr = D3D11CreateDeviceAndSwapChain(NULL, g_driverType, NULL, createDeviceFlags, featureLevels, numFeatureLevels, D3D11_SDK_VERSION, &sd, &g_pSwapChain, &g_pd3dDevice, &g_featureLevel, &g_pImmediateContext);
+        
         if (SUCCEEDED(hr)) // Если устройства созданы успешно, то выходим из цикла
             break;
     }
@@ -334,8 +335,8 @@ HRESULT InitMatrixes()
     g_World = XMMatrixIdentity();
 
     // Инициализация матрицы вида
-    XMVECTOR Eye = XMVectorSet(0.0f, 1.0f, -5.0f, 0.0f);  // Откуда смотрим
-    XMVECTOR At = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);    // Куда смотрим
+    XMVECTOR Eye = XMVectorSet(1.0f, 2.0f, -5.0f, 0.0f);  // Откуда смотрим
+    XMVECTOR At = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);    // Куда смотрим
     XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);    // Направление верха
     g_View = XMMatrixLookAtLH(Eye, At, Up);
 
@@ -346,7 +347,7 @@ HRESULT InitMatrixes()
 
 //--------------------------------------------------------------------------------------
 // Обновление матриц
-//--------------------------------------------------------------------------------------
+//----------------------------------------W----------------------------------------------
 
 void SetMatrixes()
 {
@@ -420,82 +421,91 @@ HRESULT InitGeometry()
     // Компиляция пиксельного шейдера из файла
     ID3DBlob* pPSBlob = NULL;
     hr = CompileShaderFromFile(L"test2.fx", "PS", "ps_4_0", &pPSBlob);
-
     if (FAILED(hr))
     {
         MessageBox(NULL, L"Невозможно скомпилировать файл FX. Пожалуйста, запустите данную программу из папки, содержащей файл FX.", L"Ошибка", MB_OK);
         return hr;
     }
 
-
     // Создание пиксельного шейдера
     hr = g_pd3dDevice->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), NULL, &g_pPixelShader);
     pPSBlob->Release();
     if (FAILED(hr)) return hr;
 
-    // Создание буфера вершин (три вершины треугольника)
-    SimpleVertex vertices[] ={   
-        /* координаты X, Y, Z                      цвет R, G, B, A     */
-        { XMFLOAT3(0.0f,  1.5f,  0.0f), XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f) },
-        { XMFLOAT3(-1.0f,  0.0f, -1.0f), XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
-        { XMFLOAT3(1.0f,  0.0f, -1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) },
-        { XMFLOAT3(-1.0f,  0.0f,  1.0f), XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f) },
-        { XMFLOAT3(1.0f,  0.0f,  1.0f), XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f) }
+    // Создание буфера вершин (пять углов пирамиды)
+    SimpleVertex vertices[] =
+    {	/* координаты X, Y, Z				цвет R, G, B, A					 */
+        { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f)  },
+        { XMFLOAT3(1.0f,  1.0f, -1.0f), XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f)  },
+        { XMFLOAT3(1.0f,  1.0f,  1.0f), XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f)  },
+        { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f)  },
+        { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f)  },
+        { XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)  },
+        { XMFLOAT3(1.0f, -1.0f,  1.0f), XMFLOAT4(1.0f, 1.0f, 0.0f, 0.0f)  },
+        { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)  }
     };
-        
-    D3D11_BUFFER_DESC bd;                               // Структура, описывающая создаваемый буфер
-    ZeroMemory(&bd, sizeof(bd));                        // очищаем ее
-    bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(SimpleVertex) * 5;            // размер буфера 
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;            // тип буфера - буфер вершин
-    bd.CPUAccessFlags = 0;
 
-    D3D11_SUBRESOURCE_DATA InitData;                    // Структура, содержащая данные буфера
-    ZeroMemory(&InitData, sizeof(InitData));            // очищаем ее
-    InitData.pSysMem = vertices;                        // указатель на наши вершины
+    D3D11_BUFFER_DESC bd;	// Структура, описывающая создаваемый буфер
+    ZeroMemory(&bd, sizeof(bd));				// очищаем ее
+    bd.Usage = D3D11_USAGE_DEFAULT;
+    bd.ByteWidth = sizeof(SimpleVertex) * 8;	// размер буфера
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;	// тип буфера - буфер вершин
+    bd.CPUAccessFlags = 0;
+    D3D11_SUBRESOURCE_DATA InitData;	// Структура, содержащая данные буфера
+    ZeroMemory(&InitData, sizeof(InitData));	// очищаем ее
+    InitData.pSysMem = vertices;				// указатель на наши 8 вершин
+    // Вызов метода g_pd3dDevice создаст объект буфера вершин
+    hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pVertexBuffer);
+    if (FAILED(hr)) return hr;
 
     // Создание буфера индексов:
     // Создание массива с данными
     WORD indices[] =
-    {  // индексы массива vertices[], по которым строятся треугольники
-        0,2,1,      /* Треугольник 1 = vertices[0], vertices[2], vertices[1] */
-        0,3,4,      /* Треугольник 2 = vertices[0], vertices[3], vertices[4] */
+    {
+        3,1,0,
+        2,1,3,
 
-        0,1,3,
-        0,4,2,
+        0,5,4,
+        1,5,0,
 
-        1,2,3,
-        2,4,3,
+        3,4,7,
+        0,4,3,
+
+        1,6,5,
+        2,6,1,
+
+        2,7,6,
+        3,7,2,
+
+        6,4,5,
+        7,4,6
     };
-
-    bd.Usage = D3D11_USAGE_DEFAULT;             // Структура, описывающая создаваемый буфер
-    bd.ByteWidth = sizeof(WORD) * 18;           // для 6 треугольников необходимо 18 вершин
-    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;     // тип - буфер индексов
+    bd.Usage = D3D11_USAGE_DEFAULT;		// Структура, описывающая создаваемый буфер
+    bd.ByteWidth = sizeof(WORD) * 36;
+    bd.BindFlags = D3D11_BIND_INDEX_BUFFER; // тип - буфер индексов
     bd.CPUAccessFlags = 0;
-    InitData.pSysMem = indices;                 // указатель на наш массив индексов
-
-    // Вызов метода g_pd3dDevice создаст объект буфера вершин ID3D11Buffer
-    hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pVertexBuffer);
+    InitData.pSysMem = indices;				// указатель на наш массив индексов
+    // Вызов метода g_pd3dDevice создаст объект буфера индексов
+    hr = g_pd3dDevice->CreateBuffer(&bd, &InitData, &g_pIndexBuffer);
     if (FAILED(hr)) return hr;
 
-    // Установка буфера вершин:
+    // Установка буфера вершин
     UINT stride = sizeof(SimpleVertex);
     UINT offset = 0;
     g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
-    
     // Установка буфера индексов
     g_pImmediateContext->IASetIndexBuffer(g_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
-    
-    // Установка способа отрисовки вершин в буфере
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    // Установка способа отрисовки вершин в буфере (в данном случае - TRIANGLE LIST,
+    // т. е. точки 1-3 - первый треугольник, 4-6 - второй и т. д.
+    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // Создание константного буфера
     bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(ConstantBuffer);                      // размер буфера = размеру структуры
-    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;                  // тип - константный буфер
+    bd.ByteWidth = sizeof(ConstantBuffer);		// размер буфера = размеру структуры
+    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;	// тип - константный буфер
     bd.CPUAccessFlags = 0;
+    // Вызов метода g_pd3dDevice создаст объект константного буфера
     hr = g_pd3dDevice->CreateBuffer(&bd, NULL, &g_pConstantBuffer);
-
     if (FAILED(hr)) return hr;
 
     return S_OK;
@@ -517,7 +527,7 @@ void Render()
     g_pImmediateContext->PSSetShader(g_pPixelShader, NULL, 0);
 
     // Рисовка в задний буфер
-    g_pImmediateContext->DrawIndexed(18, 0, 0);
+    g_pImmediateContext->DrawIndexed(36, 0, 0);
 
     // Вывести в передний буфер (на экран) информацию, нарисованную в заднем буфере.
     g_pSwapChain->Present(0, 0);
