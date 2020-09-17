@@ -6,7 +6,7 @@
 #include <xnamath.h>
 #include "resource.h"
 
-
+#define MX_SETWORLD 0x101
 
 //--------------------------------------------------------------------------------------
 // Структуры
@@ -15,7 +15,7 @@
 struct SimpleVertex
 {
     XMFLOAT3 Pos;       // Координаты точки в пространстве
-    XMFLOAT4 Color;     // Цвет точки
+    XMFLOAT3 Normal;    // Нормаль вершины
 };
 
 // Структура константного буфера (совпадает со структурой в шейдере)
@@ -25,6 +25,10 @@ struct ConstantBuffer
     XMMATRIX mWorld;       // Матрица мира
     XMMATRIX mView;        // Матрица вида
     XMMATRIX mProjection;  // Матрица проекции
+
+    XMFLOAT4 vLightDir[2];  // Направление источника света
+    XMFLOAT4 vLightColor[2];// Цвет источниа цвета
+    XMFLOAT4 vOutputColor;  // Активный цвет (для второго PSSolid)
 };
 
 //--------------------------------------------------------------------------------------
@@ -39,17 +43,24 @@ ID3D11Device*           g_pd3dDevice = NULL;                            // Ус�
 ID3D11DeviceContext*    g_pImmediateContext = NULL;                     // Контекст устройства (рисование)
 IDXGISwapChain*         g_pSwapChain = NULL;                            // Цепь связи (буфера с экраном)
 ID3D11RenderTargetView* g_pRenderTargetView = NULL;                     // Объект заднего буфера
-ID3D11VertexShader*     g_pVertexShader = NULL;                         // Вершинный шейдер
-ID3D11PixelShader*      g_pPixelShader = NULL;                          // Пиксельный шейдер
-ID3D11InputLayout*      g_pVertexLayout = NULL;                         // Описание формата вершин
+ID3D11Texture2D*        g_pDepthStencil = NULL;                         // Текстура буфера глубин
+ID3D11DepthStencilView* g_pDepthStencilView = NULL;                     // Объект вида, буфер глубин
 
+ID3D11VertexShader*     g_pVertexShader = NULL;                         // Вершинный шейдер
+ID3D11PixelShader*      g_pPixelShader = NULL;                          // Пиксельный шейдер для куба
+ID3D11PixelShader*      g_pPixelShaderSolid = NULL;                     // Пиксельный шейдер для источников света
+ID3D11InputLayout*      g_pVertexLayout = NULL;                         // Описание формата вершин
 ID3D11Buffer*           g_pVertexBuffer = NULL;                         // Буфер вершин
-ID3D11Buffer*           g_pIndexBuffer = NULL;                                    // Буфер индексов вершин
-ID3D11Buffer*           g_pConstantBuffer = NULL;                                 // Константный буфер
+ID3D11Buffer*           g_pIndexBuffer = NULL;                          // Буфер индексов вершин
+ID3D11Buffer*           g_pConstantBuffer = NULL;                       // Константный буфер
 
 XMMATRIX                g_World;                                        // Матрица мира
 XMMATRIX                g_View;                                         // Матрица вида
 XMMATRIX                g_Projection;                                   // Матрица проекции
+FLOAT                   t = 0.0f;                                       // Переменная времени
+
+XMFLOAT4                vLightDirs[2];                                  // направление света ( позиция источников света)
+XMFLOAT4                vLightColors[2];                                // Цвет источников
 
 //--------------------------------------------------------------------------------------
 // Предварительные объявления функций
@@ -58,10 +69,11 @@ XMMATRIX                g_Projection;                                   // Ма�
 HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow);  // Создание окна
 HRESULT InitDevice();                                   // Инициализация устройств DirectX
 HRESULT InitGeometry();                                 // Инициализация шаблона ввода и буфера вершин
-void CleanupDevice();                                   // Удаление созданнных устройств DirectX
-HRESULT InitMatrixes();                                 // Инициализация матриц
-void SetMatrixes();                                     // Обновление матрицы мира
+HRESULT InitMatrixes();  
+void UpdateLight();                                     // Обновление параметров света
+void UpdateMatrix(UINT nLightIndex);                    // Обновление матрицы мира
 void Render();                                          // Функция рисования
+void CleanupDevice();                                   // Удаление созданнных устройств DirectX
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);   // Функция окна
 
 //--------------------------------------------------------------------------------------
@@ -110,7 +122,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
         }
         else // Если сообщений нет
         {
-            SetMatrixes();
             Render();      // Рисуем
         }
     }
@@ -281,8 +292,39 @@ HRESULT InitDevice()
     pBackBuffer->Release();
     if (FAILED(hr)) return hr;
 
+    // Переходим к созданию буфера глубин
+    // Создаем текстуру-описание буфера глубин
+    D3D11_TEXTURE2D_DESC descDepth;                         // Структура с параметрами
+    ZeroMemory(&descDepth, sizeof(descDepth));
+    descDepth.Width = width;                                // ширина и
+    descDepth.Height = height;                              // высота текстуры
+    descDepth.MipLevels = 1;                                // уровень интерполяции
+    descDepth.ArraySize = 1;
+    descDepth.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;       // формат (размер пикселя)
+    descDepth.SampleDesc.Count = 1;
+    descDepth.SampleDesc.Quality = 0;
+    descDepth.Usage = D3D11_USAGE_DEFAULT;
+    descDepth.BindFlags = D3D11_BIND_DEPTH_STENCIL;         // вид - буфер глубин
+    descDepth.CPUAccessFlags = 0;
+    descDepth.MiscFlags = 0;
+
+    // При помощи заполненной структуры-описания создаем объект текстуры
+    hr = g_pd3dDevice->CreateTexture2D(&descDepth, NULL, &g_pDepthStencil);
+    if (FAILED(hr)) return hr;
+
+    // Теперь надо создать сам объект буфера глубин
+    D3D11_DEPTH_STENCIL_VIEW_DESC descDSV;                  // Структура с параметрами
+    ZeroMemory(&descDSV, sizeof(descDSV));
+    descDSV.Format = descDepth.Format;                      // формат как в текстуре
+    descDSV.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+    descDSV.Texture2D.MipSlice = 0;
+
+    // При помощи заполненной структуры-описания и текстуры создаем объект буфера глубин
+    hr = g_pd3dDevice->CreateDepthStencilView(g_pDepthStencil, &descDSV, &g_pDepthStencilView);
+    if (FAILED(hr)) return hr;
+
     // Подключаем объект заднего буфера к контексту устройства
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, NULL);
+    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, g_pDepthStencilView);
 
     // Настройка вьюпорта
     D3D11_VIEWPORT vp;
@@ -314,6 +356,8 @@ void CleanupDevice()
     if (g_pVertexLayout) g_pVertexLayout->Release();
     if (g_pVertexShader) g_pVertexShader->Release();
     if (g_pPixelShader) g_pPixelShader->Release();
+    if (g_pDepthStencil) g_pDepthStencil->Release();
+    if (g_pDepthStencilView) g_pDepthStencilView->Release();
     if (g_pRenderTargetView) g_pRenderTargetView->Release();
     if (g_pSwapChain) g_pSwapChain->Release();
     if (g_pImmediateContext) g_pImmediateContext->Release();
@@ -335,8 +379,8 @@ HRESULT InitMatrixes()
     g_World = XMMatrixIdentity();
 
     // Инициализация матрицы вида
-    XMVECTOR Eye = XMVectorSet(1.0f, 2.0f, -5.0f, 0.0f);  // Откуда смотрим
-    XMVECTOR At = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);    // Куда смотрим
+    XMVECTOR Eye = XMVectorSet(0.0f, 4.0f, -10.0f, 0.0f);  // Откуда смотрим
+    XMVECTOR At = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);    // Куда смотрим
     XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);    // Направление верха
     g_View = XMMatrixLookAtLH(Eye, At, Up);
 
@@ -349,7 +393,7 @@ HRESULT InitMatrixes()
 // Обновление матриц
 //----------------------------------------W----------------------------------------------
 
-void SetMatrixes()
+void SetMatrixes(float fAngle)
 {
     // Обновление переменной-времени
     static float t = 0.0f;
@@ -366,8 +410,20 @@ void SetMatrixes()
         t = (dwTimeCur - dwTimeStart) / 1000.0f;
     }
 
-    // Вращать мир по оси Y на угол t (в радианах)
-    g_World = XMMatrixRotationY(t);
+    // Матрица-орбита: позиция объекта
+    XMMATRIX mOrbit = XMMatrixRotationY(-t + fAngle);
+    // Матрица-спин: вращение объекта вокруг своей оси
+    XMMATRIX mSpin = XMMatrixRotationY(t * 2);
+    // Матрица-позиция: перемещение на три единицы влево от начала координат
+    XMMATRIX mTranslate = XMMatrixTranslation(-3.0f, 0.0f, 0.0f);
+    // Матрица-масштаб: сжатие объекта в 2 раза
+    XMMATRIX mScale = XMMatrixScaling(0.5f, 0.5f, 0.5f);
+
+    // Результирующая матрица
+    //  --Сначала мы в центре, в масштабе 1:1:1, повернуты по всем осям на 0.0f.
+    //  --Сжимаем -> поворачиваем вокруг Y (пока мы еще в центре) -> переносим влево ->
+    //  --снова поворачиваем вокруг Y.
+    g_World = mScale * mSpin * mTranslate * mOrbit;
 
     // Обновить константный буфер
     // создаем временную структуру и загружаем в нее матрицы
@@ -389,7 +445,7 @@ HRESULT InitGeometry()
     hr = CompileShaderFromFile(L"test2.fx", "VS", "vs_4_0", &pVSBlob);
     if (FAILED(hr))
     {
-        MessageBox(NULL, L"Невозможно скомпилировать файл FX. Пожалуйста, запустите данную программу из папки, содержащей файл FX.", L"Ошибка", MB_OK);
+        MessageBox(NULL, L"Невозможно скомпилировать файл FX. Пожалуйста, запустите данную программу из папки, содержащей файл VS.", L"Ошибка", MB_OK);
         return hr;
     }
 
@@ -405,7 +461,7 @@ HRESULT InitGeometry()
     D3D11_INPUT_ELEMENT_DESC layout[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
     UINT numElements = ARRAYSIZE(layout);
 
@@ -418,7 +474,7 @@ HRESULT InitGeometry()
     // Подключение шаблона вершин
     g_pImmediateContext->IASetInputLayout(g_pVertexLayout);
 
-    // Компиляция пиксельного шейдера из файла
+    // Компиляция пиксельного шейдера для основного большого куба из файла
     ID3DBlob* pPSBlob = NULL;
     hr = CompileShaderFromFile(L"test2.fx", "PS", "ps_4_0", &pPSBlob);
     if (FAILED(hr))
@@ -432,23 +488,58 @@ HRESULT InitGeometry()
     pPSBlob->Release();
     if (FAILED(hr)) return hr;
 
-    // Создание буфера вершин (пять углов пирамиды)
+    // Компиляция пиксельного шейдера для источников света из файла
+    pPSBlob = NULL;
+    hr = CompileShaderFromFile(L"test2.fx", "PSSolid", "ps_4_0", &pPSBlob);
+    if (FAILED(hr))
+    {
+        MessageBox(NULL, L"Невозможно скомпилировать файл FX. Пожалуйста, запустите данную программу из папки, содержащей файл FX.", L"Ошибка", MB_OK);
+        return hr;
+    }
+
+    // Создание пиксельного шейдера
+    hr = g_pd3dDevice->CreatePixelShader(pPSBlob->GetBufferPointer(), pPSBlob->GetBufferSize(), NULL, &g_pPixelShaderSolid);
+    pPSBlob->Release();
+    if (FAILED(hr)) return hr;
+
+    // Создание буфера вершин (по 4 точки на каждую сторону куба, всего 24 вершины)
     SimpleVertex vertices[] =
-    {	/* координаты X, Y, Z				цвет R, G, B, A					 */
-        { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f)  },
-        { XMFLOAT3(1.0f,  1.0f, -1.0f), XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f)  },
-        { XMFLOAT3(1.0f,  1.0f,  1.0f), XMFLOAT4(0.0f, 1.0f, 1.0f, 1.0f)  },
-        { XMFLOAT3(-1.0f,  1.0f,  1.0f), XMFLOAT4(1.0f, 0.0f, 1.0f, 1.0f)  },
-        { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f)  },
-        { XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)  },
-        { XMFLOAT3(1.0f, -1.0f,  1.0f), XMFLOAT4(1.0f, 1.0f, 0.0f, 0.0f)  },
-        { XMFLOAT3(-1.0f, -1.0f,  1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f)  }
+    {  /* координаты X, Y, Z                          нормаль X, Y, Z     */
+        { XMFLOAT3(-1.0f, 1.0f, -1.0f),      XMFLOAT3(0.0f, 1.0f, 0.0f) },
+        { XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f) },
+        { XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f) },
+        { XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f) },
+
+        { XMFLOAT3(-1.0f, -1.0f, -1.0f),     XMFLOAT3(0.0f, -1.0f, 0.0f) },
+        { XMFLOAT3(1.0f, -1.0f, -1.0f),      XMFLOAT3(0.0f, -1.0f, 0.0f) },
+        { XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT3(0.0f, -1.0f, 0.0f) },
+        { XMFLOAT3(-1.0f, -1.0f, 1.0f),      XMFLOAT3(0.0f, -1.0f, 0.0f) },
+
+        { XMFLOAT3(-1.0f, -1.0f, 1.0f),      XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-1.0f, -1.0f, -1.0f),     XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-1.0f, 1.0f, -1.0f),      XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+
+        { XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(1.0f, -1.0f, -1.0f),      XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+        { XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT3(1.0f, 0.0f, 0.0f) },
+
+        { XMFLOAT3(-1.0f, -1.0f, -1.0f),     XMFLOAT3(0.0f, 0.0f, -1.0f) },
+        { XMFLOAT3(1.0f, -1.0f, -1.0f),      XMFLOAT3(0.0f, 0.0f, -1.0f) },
+        { XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT3(0.0f, 0.0f, -1.0f) },
+        { XMFLOAT3(-1.0f, 1.0f, -1.0f),      XMFLOAT3(0.0f, 0.0f, -1.0f) },
+
+        { XMFLOAT3(-1.0f, -1.0f, 1.0f),      XMFLOAT3(0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT3(0.0f, 0.0f, 1.0f) },
     };
 
     D3D11_BUFFER_DESC bd;	// Структура, описывающая создаваемый буфер
     ZeroMemory(&bd, sizeof(bd));				// очищаем ее
     bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(SimpleVertex) * 8;	// размер буфера
+    bd.ByteWidth = sizeof(SimpleVertex) * 24;	// размер буфера
     bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;	// тип буфера - буфер вершин
     bd.CPUAccessFlags = 0;
     D3D11_SUBRESOURCE_DATA InitData;	// Структура, содержащая данные буфера
@@ -465,23 +556,24 @@ HRESULT InitGeometry()
         3,1,0,
         2,1,3,
 
-        0,5,4,
-        1,5,0,
-
-        3,4,7,
-        0,4,3,
-
-        1,6,5,
-        2,6,1,
-
-        2,7,6,
-        3,7,2,
-
         6,4,5,
-        7,4,6
+        7,4,6,
+
+        11,9,8,
+        10,9,11,
+
+        14,12,13,
+        15,12,14,
+
+        19,17,16,
+        18,17,19,
+
+        22,20,21,
+        23,20,22
     };
-    bd.Usage = D3D11_USAGE_DEFAULT;		// Структура, описывающая создаваемый буфер
-    bd.ByteWidth = sizeof(WORD) * 36;
+
+    bd.Usage = D3D11_USAGE_DEFAULT;		    // Структура, описывающая создаваемый буфер
+    bd.ByteWidth = sizeof(WORD) * 36;       // 36 вершин для 12 треугольников (6 сторон)
     bd.BindFlags = D3D11_BIND_INDEX_BUFFER; // тип - буфер индексов
     bd.CPUAccessFlags = 0;
     InitData.pSysMem = indices;				// указатель на наш массив индексов
@@ -511,6 +603,84 @@ HRESULT InitGeometry()
     return S_OK;
 }
 
+
+//--------------------------------------------------------------------------------------
+// Вычисляем направление света
+//--------------------------------------------------------------------------------------
+
+void UpdateLight()
+{
+    // Обновление переменной-времени
+    if (g_driverType == D3D_DRIVER_TYPE_REFERENCE)
+    {
+        t += (float)XM_PI * 0.0125f;
+    }
+    else
+    {
+        static DWORD dwTimeStart = 0;
+        DWORD dwTimeCur = GetTickCount();
+        if (dwTimeStart == 0)
+            dwTimeStart = dwTimeCur;
+        t = (dwTimeCur - dwTimeStart) / 1000.0f;
+    }
+
+    // Задаем начальные координаты источников света
+    vLightDirs[0] = XMFLOAT4(-0.577f, 0.577f, -0.577f, 1.0f);
+    vLightDirs[1] = XMFLOAT4(0.0f, 0.0f, -1.0f, 1.0f);
+
+    // Задаем цвет источников света, у нас он не будет меняться
+    vLightColors[0] = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+    vLightColors[1] = XMFLOAT4(1.0f, 0.5f, 0.0f, 1.0f);
+
+    // При помощи трансформаций поворачиваем второй источник света
+    XMMATRIX mRotate = XMMatrixRotationY(-2.0f * t);
+    XMVECTOR vLightDir = XMLoadFloat4(&vLightDirs[1]);
+    vLightDir = XMVector3Transform(vLightDir, mRotate);
+    XMStoreFloat4(&vLightDirs[1], vLightDir);
+
+    // При помощи трансформаций поворачиваем первый источник света
+    mRotate = XMMatrixRotationY(0.5f * t);
+    vLightDir = XMLoadFloat4(&vLightDirs[0]);
+    vLightDir = XMVector3Transform(vLightDir, mRotate);
+    XMStoreFloat4(&vLightDirs[0], vLightDir);
+}
+
+//--------------------------------------------------------------------------------------
+// Устанавливаем матрицы для текущего источника света (0-1) или мира (MX_SETWORLD)
+//--------------------------------------------------------------------------------------
+
+void UpdateMatrix(UINT nLightIndex)
+{
+    // Небольшая проверка индекса
+    if (nLightIndex == MX_SETWORLD) {
+        // Если рисуем центральный куб: его надо просто вращать
+        g_World = XMMatrixRotationAxis(XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f), t);
+        nLightIndex = 0;
+    }
+    else if (nLightIndex < 2) {
+
+        // Если рисуем источники света: перемещаем матрицу в точку и уменьшаем в 5 раз
+        g_World = XMMatrixTranslationFromVector(5.0f * XMLoadFloat4(&vLightDirs[nLightIndex]));
+        XMMATRIX mLightScale = XMMatrixScaling(0.2f, 0.2f, 0.2f);
+        g_World = mLightScale * g_World;
+    }
+    else {
+        nLightIndex = 0;
+    }
+
+    // Обновление содержимого константного буфера
+    ConstantBuffer cb1;    // временный контейнер
+    cb1.mWorld = XMMatrixTranspose(g_World); // загружаем в него матрицы
+    cb1.mView = XMMatrixTranspose(g_View);
+    cb1.mProjection = XMMatrixTranspose(g_Projection);
+    cb1.vLightDir[0] = vLightDirs[0];          // загружаем данные о свете
+    cb1.vLightDir[1] = vLightDirs[1];
+    cb1.vLightColor[0] = vLightColors[0];
+    cb1.vLightColor[1] = vLightColors[1];
+    cb1.vOutputColor = vLightColors[nLightIndex];
+    g_pImmediateContext->UpdateSubresource(g_pConstantBuffer, 0, NULL, &cb1, 0, 0);
+}
+
 //--------------------------------------------------------------------------------------
 // Рисование кадра
 //--------------------------------------------------------------------------------------
@@ -521,14 +691,28 @@ void Render()
     float ClearColor[4] = { 0.0f, 0.0f, 1.0f, 1.0f }; // красный, зеленый, синий, альфа-канал
     g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, ClearColor);
 
-    // Подключение к устройтву рисования шейдеров
+    g_pImmediateContext->ClearDepthStencilView(g_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+
+    UpdateLight();
+
+    UpdateMatrix(MX_SETWORLD);
     g_pImmediateContext->VSSetShader(g_pVertexShader, NULL, 0);
     g_pImmediateContext->VSSetConstantBuffers(0, 1, &g_pConstantBuffer);
     g_pImmediateContext->PSSetShader(g_pPixelShader, NULL, 0);
-
-    // Рисовка в задний буфер
+    g_pImmediateContext->PSSetConstantBuffers(0, 1, &g_pConstantBuffer);
     g_pImmediateContext->DrawIndexed(36, 0, 0);
 
-    // Вывести в передний буфер (на экран) информацию, нарисованную в заднем буфере.
+    g_pImmediateContext->PSSetShader(g_pPixelShaderSolid, NULL, 0);
+    for (int m = 0; m < 2; m++)
+    {
+        UpdateMatrix(m);
+        g_pImmediateContext->DrawIndexed(36, 0, 0);
+    }
+
     g_pSwapChain->Present(0, 0);
+
+
 }
+
+
+
